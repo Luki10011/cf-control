@@ -95,6 +95,7 @@ RUN apt update && apt install -y \
     ros-${ROS_DISTRO}-ament-lint-cmake \
     ros-${ROS_DISTRO}-ros-base \
     ros-${ROS_DISTRO}-tf-transformations \
+    ros-${ROS_DISTRO}-plotjuggler-ros \
     ros-dev-tools
 
 # Install Gazebo Harmonic - Default Gazebo version in ROS2 Humble is Fortress
