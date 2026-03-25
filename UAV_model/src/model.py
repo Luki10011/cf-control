@@ -1,97 +1,87 @@
 import numpy as np
-from constants import INERTIA_TENSOR, MASS, g
-from utils import multiply_quaternions, multiply_vector_by_quaternion
+import rclpy
+from constants import MASS, g
+from nav_msgs.msg import Odometry
+from propagator import UAVPropagator
+from rclpy.node import Node
+from std_msgs.msg import Float32MultiArray
+from uav import UAVModel
 
 
-class UAVModel:
-    def __init__(self, initial_conditions: np.ndarray):
-        self.mass = MASS
-        self.inertia_tensor = INERTIA_TENSOR
-        self.position = initial_conditions[0:3]
-        self.linear_velocity = initial_conditions[3:6]
-        self.quternions_orientation = initial_conditions[6:10]
-        self.angular_velocity = initial_conditions[10:13]
+class UAVNode(Node):
+    def __init__(self):
+        super().__init__('uav_sim_node')
 
+        dt = 0.01
 
-class UAVPropagator:
-    def __init__(self, timestep, uavModel):
-        self.model = uavModel
-        self.ts = timestep
+        initial_state = np.zeros(13)
+        initial_state[0:3] = [10, 10, 10]
+        initial_state[6] = 1
 
-    def state_equation(self, control):
-        T, tx, ty, tz = control
+        self.state = initial_state
+        self.model = UAVModel(self.state)
+        self.propagator = UAVPropagator(dt, self.model)
 
-        # Force and torque
-        T_vec = np.array([0.0, 0.0, T])
-        tau = np.array([tx, ty, tz])
+        self.control = np.array([MASS * g + 0.2, 0.0, 0.0, 0.0])
 
-        # State unpack
-        r_dot = self.model.linear_velocity
+        self.odom_pub = self.create_publisher(Odometry, 'uav/odom', 10)
 
-        v_dot = -g + (1 / MASS) * multiply_vector_by_quaternion(
-            self.model.quternions_orientation, T_vec
+        self.control_sub = self.create_subscription(
+            Float32MultiArray, 'uav/control', self.control_callback, 10
         )
 
-        q = self.model.quternions_orientation
-        omega = self.model.angular_velocity
+        self.timer = self.create_timer(dt, self.update)
 
-        omega_quat = np.array([0.0, omega[0] / 2, omega[1] / 2, omega[2] / 2])
+    def control_callback(self, msg):
+        self.control = np.array(msg.data)
 
-        q_dot = multiply_quaternions(q, omega_quat)
+    def update(self):
+        self.state = self.propagator.rk4(self.state, self.control)
 
-        omega_dot = np.linalg.inv(INERTIA_TENSOR) @ (tau - np.cross(omega, INERTIA_TENSOR @ omega))
+        odom_msg = Odometry()
 
-        return np.concatenate([r_dot, v_dot, q_dot, omega_dot])
+        # ================= HEADER =================
+        odom_msg.header.stamp = self.get_clock().now().to_msg()
+        odom_msg.header.frame_id = 'world'
+        odom_msg.child_frame_id = 'base_link'  # standard ROS
 
-    def rk4(self, state_vector, control):
+        # ================= POSE =================
+        odom_msg.pose.pose.position.x = float(self.state[0])
+        odom_msg.pose.pose.position.y = float(self.state[1])
+        odom_msg.pose.pose.position.z = float(self.state[2])
 
-        dt = self.ts
+        odom_msg.pose.pose.orientation.w = float(self.state[6])
+        odom_msg.pose.pose.orientation.x = float(self.state[7])
+        odom_msg.pose.pose.orientation.y = float(self.state[8])
+        odom_msg.pose.pose.orientation.z = float(self.state[9])
 
-        def set_state(x):
-            self.model.position = x[0:3]
-            self.model.linear_velocity = x[3:6]
-            self.model.quternions_orientation = x[6:10]
-            self.model.angular_velocity = x[10:13]
+        # ================= VELOCITY =================
+        # liniowa
+        odom_msg.twist.twist.linear.x = float(self.state[3])
+        odom_msg.twist.twist.linear.y = float(self.state[4])
+        odom_msg.twist.twist.linear.z = float(self.state[5])
 
-        # RK4 steps
-        set_state(state_vector)
-        k1 = self.state_equation(control)
+        # kątowa
+        odom_msg.twist.twist.angular.x = float(self.state[10])
+        odom_msg.twist.twist.angular.y = float(self.state[11])
+        odom_msg.twist.twist.angular.z = float(self.state[12])
 
-        set_state(state_vector + 0.5 * dt * k1)
-        k2 = self.state_equation(control)
+        self.odom_pub.publish(odom_msg)
 
-        set_state(state_vector + 0.5 * dt * k2)
-        k3 = self.state_equation(control)
-
-        set_state(state_vector + dt * k3)
-        k4 = self.state_equation(control)
-
-        next_state = state_vector + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
-
-        # Normalize quaternion
-        next_state[6:10] /= np.linalg.norm(next_state[6:10])
-
-        return next_state
+        # DEBUG
+        self.get_logger().info(f'Pos: {self.state[0:3]}')
+        self.get_logger().info(f'Lin Vel: {self.state[3:6]}')
+        self.get_logger().info(f'Ang Vel: {self.state[10:13]}')
 
 
-def main():
-    initial_state = np.zeros(13)
-    initial_state[2] = 10
-    initial_state[6] = 1.0
+def main(args=None):
+    rclpy.init(args=args)
 
-    dt = 0.01
-    model = UAVModel(initial_state)
-    propagator = UAVPropagator(dt, model)
+    node = UAVNode()
+    rclpy.spin(node)
 
-    state = initial_state.copy()
-
-    control = [10, 0.0, 0.0, 0.0]
-
-    for i in range(100):
-        state = propagator.rk4(state, control)
-        print(f'Step {i}: position = {state[0:3]}')
-
-    print('Simulation complete.')
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == '__main__':
