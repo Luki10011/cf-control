@@ -31,3 +31,46 @@ def multiply_quaternions(q1, q2):
             w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
         ]
     )
+
+
+def rotation_matrix_to_quaternion(R):
+    """
+    R: macierz 3x3
+    zwraca: (w, x, y, z)
+    """
+    r00, r01, r02 = R[0]
+    r10, r11, r12 = R[1]
+    r20, r21, r22 = R[2]
+
+    trace = r00 + r11 + r22
+
+    if trace > 0:
+        S = 2.0 * np.sqrt(trace + 1.0)
+        w = 0.25 * S
+        x = (r21 - r12) / S
+        y = (r02 - r20) / S
+        z = (r10 - r01) / S
+
+    elif (r00 > r11) and (r00 > r22):
+        S = 2.0 * np.sqrt(1.0 + r00 - r11 - r22)
+        w = (r21 - r12) / S
+        x = 0.25 * S
+        y = (r01 + r10) / S
+        z = (r02 + r20) / S
+
+    elif r11 > r22:
+        S = 2.0 * np.sqrt(1.0 + r11 - r00 - r22)
+        w = (r02 - r20) / S
+        x = (r01 + r10) / S
+        y = 0.25 * S
+        z = (r12 + r21) / S
+
+    else:
+        S = 2.0 * np.sqrt(1.0 + r22 - r00 - r11)
+        w = (r10 - r01) / S
+        x = (r02 + r20) / S
+        y = (r12 + r21) / S
+        z = 0.25 * S
+
+    q = np.array([w, x, y, z])
+    return q / np.linalg.norm(q)  # normalizacja
