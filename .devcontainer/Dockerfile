@@ -134,10 +134,14 @@ RUN git clone https://github.com/acados/acados.git /home/developer/acados -b v0.
     make install -j8
 
 # Acados Python interface
+# Instalacja brakujących zależności build-time
+RUN pip install --upgrade pip setuptools wheel vcs_versioning
+
+# Właściwa instalacja acados
 RUN pip install /home/developer/acados/interfaces/acados_template && \
     echo "export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/developer/acados/lib" >> /home/developer/.bashrc && \
     echo "export ACADOS_SOURCE_DIR=/home/developer/acados" >> /home/developer/.bashrc
-
+    
 # Install l4casadi
 RUN git clone https://github.com/Tim-Salzmann/l4casadi.git /home/developer/l4casadi -b v2.0.0-release && \
     cd /home/developer/l4casadi && \
