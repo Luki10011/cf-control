@@ -7,13 +7,14 @@ import pandas as pd
 # Zakładam, że te moduły są w Twoim projekcie
 from constants import g
 from model import UAVModel
-from utils import rotation_matrix_to_quaternion
+from utils import rotation_matrix_to_quaternion, quaternion_to_rotation_matrix
+
 
 class Trajectory:
     def __init__(self, type, R, model):
         self.type = type
         self.R = R
-        self.model = model # Przyjmuje gotowy obiekt UAVModel
+        self.model : UAVModel = model # Przyjmuje gotowy obiekt UAVModel
 
     def calculate_state_from_flat_inputs(
         self,
@@ -55,14 +56,6 @@ class Trajectory:
 
         w = np.array([w_x, w_y, w_z])
 
-        # Pochodna prędkości kątowej i Moment obrotowy (Torque)
-
-        # w_dot_x = (m / thrust_val) * snap[0] - 2 * (m / thrust_val) * jerk[2] * w_y - w_x * w_z
-        # w_dot_y = (m / thrust_val) * snap[1] + 2 * (m / thrust_val) * jerk[2] * w_x - w_y * w_z
-        # w_dot_z = yaw_acc * np.dot(z_W, z_B)
-        # w_dot = np.array([w_dot_x, w_dot_y, w_dot_z])
-
-
         # To dziala
         w_dot_x = -((m / thrust_val) * snap[1] + 2 * (m / thrust_val) * jerk[2] * w_x - w_y * w_z)
         w_dot_y = (m / thrust_val) * snap[0] - 2 * (m / thrust_val) * jerk[2] * w_y - w_x * w_z
@@ -79,11 +72,55 @@ class Trajectory:
             'thrust': thrust_val,
             'torque': tau
         }
+    
+    def mellinger_controll(self, target_state):
+        # target_state to słownik zwrócony przez calculate_state_from_flat_inputs
+        # current_state powinien zawierać: pos, vel, quat, omega
+        
+        # Parametry (powinny być w self.model)
+        m = self.model.mass
+        g_vec = np.array([0, 0, 9.81])
+        Kp = 6 * np.eye(3) # Przykładowe wzmocnienia pozycyjne
+        Kv = 3 * np.eye(3)  # Przykładowe wzmocnienia prędkości
+        KR = 2 * np.eye(3)  # Wzmocnienia orientacji
+        Kw = 4 * np.eye(3)  # Wzmocnienia prędkości kątowej
+
+        # 1. Błąd pozycji i prędkości [cite: 478]
+        ep = self.model.position - target_state['pos']
+        ev = self.model.linear_velocity - target_state['vel']
+
+        # F_des = -Kp*ep - Kv*ev + m*g*zW + m*acc_target
+        # Uwaga: acc_target można wyciągnąć z logiki flat outputs
+        acc_target = target_state['acc'] 
+        F_des = -Kp @ ep - Kv @ ev + m * g_vec + m * acc_target
+        
+        # Aktualna oś z body (zB) pobrana z kwaternionu
+        R_curr = quaternion_to_rotation_matrix(self.model.quternions_orientation)
+        zB = R_curr[:, 2]
+        u1 = np.dot(F_des, zB) 
+
+        # 3. Błąd rotacji (eR) [cite: 486]
+        R_des = quaternion_to_rotation_matrix(target_state['quat'])
+        # eR = 1/2 * (R_des^T * R - R^T * R_des)^vee
+        error_mat = 0.5 * (R_des.T @ R_curr - R_curr.T @ R_des)
+        eR = np.array([error_mat[2, 1], error_mat[0, 2], error_mat[1, 0]]) # Operacja vee [cite: 486]
+
+        # 4. Błąd prędkości kątowej (ew) [cite: 488]
+        ew = self.model.angular_velocity - target_state['omega']
+
+        # 5. Momenty sterujące (u2, u3, u4) [cite: 489]
+        # Artykuł sugeruje prosty feedback, ale dla stabilności można dodać kompensację gyroskopową
+        tau = -KR @ eR - Kw @ ew
+        
+        return u1, tau
+
 
 def extract_data_from_file():
     df = pd.read_csv('trajectory_from_flat_output_test_data.csv')    
     df.set_index('test_name', inplace=True)
     return df
+
+    
 
 def test_trajectory(df, test_name):
     # 1. Pobranie wiersza danych dla konkretnego przypadku

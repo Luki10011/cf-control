@@ -74,3 +74,20 @@ def rotation_matrix_to_quaternion(R):
 
     q = np.array([w, x, y, z])
     return q / np.linalg.norm(q)  # normalizacja
+
+def quaternion_to_rotation_matrix(q):
+    """
+    Konwertuje kwaternion [w, x, y, z] na macierz rotacji 3x3.
+    """
+    # Normalizacja kwaternionu, aby uniknąć błędów numerycznych
+    q = q / np.linalg.norm(q)
+    w, x, y, z = q
+
+    # Elementy macierzy rotacji zgodnie z wzorem Eulera-Rodriguesa
+    R = np.array([
+        [1 - 2*y**2 - 2*z**2,   2*x*y - 2*z*w,       2*x*z + 2*y*w],
+        [2*x*y + 2*z*w,       1 - 2*x**2 - 2*z**2,   2*y*z - 2*x*w],
+        [2*x*z - 2*y*w,       2*y*z + 2*x*w,       1 - 2*x**2 - 2*y**2]
+    ])
+
+    return R
