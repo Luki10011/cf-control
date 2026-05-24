@@ -92,10 +92,10 @@ class MellingerControllerNode(Node):
         
         # DEFINICJA PUNKTU DOCELOWEGO (Target Point)
         # Przez pierwsze 5s leć do góry, potem przesuń się w bok
-        if t < 5.0:
-            p_ref = np.array([0.0, 0.0, 1.0])
-        else:
-            p_ref = np.array([1.0, 0.0, 1.0]) # Punkt (x=1, y=0, z=1)
+        # if t < 5.0:
+        p_ref = np.array([0.0, 0.0, 1.0])
+        # else:
+        #     p_ref = np.array([1.0, 0.0, 1.0]) # Punkt (x=1, y=0, z=1)
 
         # W locie do punktu prędkość i przyspieszenie referencyjne to 0
         v_ref = np.zeros(3)

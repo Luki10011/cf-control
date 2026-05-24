@@ -80,10 +80,10 @@ class Trajectory:
         # Parametry (powinny być w self.model)
         m = self.model.mass
         g_vec = np.array([0, 0, 9.81])
-        Kp = 50.0 * np.eye(3) 
-        Kv = 20.5 * np.eye(3)
-        KR = 2.5 * np.eye(3)
-        Kw = 3.5 * np.eye(3)
+        Kp = np.diag([4.0, 4.0, 10.0]) 
+        Kv = 1.6 * np.eye(3)
+        KR = 0.05 * np.eye(3)
+        Kw = 0.01 * np.eye(3)
 
         # 1. Błąd pozycji i prędkości [cite: 478]
         ep = self.model.position - target_state['pos']
