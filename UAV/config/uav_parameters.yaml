@@ -1,5 +1,5 @@
 uav:
-  ros__parameters: 
+  ros__parameters:
     mass: 0.0282
     gravity: 9.81
 

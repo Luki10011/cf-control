@@ -42,7 +42,7 @@ def calculate_state_from_flat_inputs(
         q = rotation_matrix_to_quaternion(R_mat)
 
         w_x = - (m / thrust_val) * np.dot(jerk, y_B)
-        w_y =   (m / thrust_val) * np.dot(jerk, x_B)
+        w_y = (m / thrust_val) * np.dot(jerk, x_B)
         
         z_W = np.array([0.0, 0.0, 1.0]) # Globalna oś Z
         w_z = yaw_rate * np.dot(z_W, z_B)

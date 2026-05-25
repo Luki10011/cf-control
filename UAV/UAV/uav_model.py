@@ -76,7 +76,7 @@ class UAVModelNode(Node):
         return parameters
     
     def control_callback(self, msg):
-        self._control = np.array([
+        self.control = np.array([
             msg.collective_thrust,
             msg.torque.x,
             msg.torque.y,
@@ -120,7 +120,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if node.context.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
