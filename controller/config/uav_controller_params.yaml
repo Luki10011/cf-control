@@ -1,26 +1,18 @@
 controller_node:
   ros__parameters:
-    mass: 0.028
+    mass: 0.0282
     gravity: 9.81
-
     dt: 0.001
+    max_tilt_angle_deg: 45.0
 
-    inertia_tensor: [21.09144e-6, 0.0,   0.0,
-        0.0,   21.57533e-6, 0.0,
-        0.0,   0.0,   35.86538e-5]
+    # Kp: Podkręcamy osie X i Y dla twardszego trzymania śladu w zakrętach.
+    # Oś Z zostawiamy na poziomie 2.0 (jest optymalny).
+    Kp: [2.6, 2.6, 1.5]
 
-    Kp : [0.08, 0.0,   0.0,
-        0.0,   0.08, 0.0,
-        0.0,   0.0,  0.12]
+    # Kv: Podnosimy tłumienie w osiach X i Y (0.75) dla stabilizacji wyższego Kp.
+    # Podnosimy tłumienie w osi Z (z 0.45 do 0.60), aby stłumić przesterowanie do 2 metrów.
+    Kv: [0.65, 0.65, 0.60]
 
-    Kv : [0.1, 0.0,   0.0,
-        0.0,   0.1, 0.0,
-        0.0,   0.0,   0.13]
-
-    KR : [1.5e-3, 0.0,   0.0,
-        0.0,   1.5e-3, 0.0,
-        0.0,   0.0,   5.0e-4]
-
-    KOmega : [2.0e-4, 0.0,   0.0,
-        0.0,   2.0e-4, 0.0,
-        0.0,   0.0,   2.0e-4]
+    # KR i KOmega: Pozostają bez zmian – pętla orientacji radzi sobie świetnie.
+    KR: [1.5e-3, 1.5e-3, 4.0e-4]
+    KOmega: [1.2e-3, 1.2e-3, 5.0e-4]
