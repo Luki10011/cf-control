@@ -57,12 +57,12 @@ class ControllerNode(Node):
         )
 
     def _declare_parameters(self):
-        self.declare_parameter('control_rate', 100.0)
-        self.declare_parameter('mass', 1.0)
+        self.declare_parameter('control_rate', 50.0)
+        self.declare_parameter('mass', 0.0282)
         self.declare_parameter('gravity', 9.81)
         self.declare_parameter('inertia_tensor', np.eye(3).flatten().tolist())
         self.declare_parameter('hover_position', [0.0, 0.0, 1.0])
-        self.declare_parameter('max_tilt_angle_deg', 45.0)  # Maximum tilt angle in degrees
+        self.declare_parameter('max_tilt_angle_deg', 35.0)  # Maximum tilt angle in degrees
         self.declare_parameter('Kp', np.eye(3).flatten().tolist())
         self.declare_parameter('Kv', np.eye(3).flatten().tolist())
         self.declare_parameter('KR', np.eye(3).flatten().tolist())
@@ -135,6 +135,27 @@ class ControllerNode(Node):
         if not self._trajectory_generated:
             self._setup_hardcoded_trajectory()
 
+    def _calculate_smooth_durations(self, waypoints, v_avg=0.4):
+        durations = []
+        for i in range(len(waypoints) - 1):
+            # Oblicz dystans geometryczny między punktami
+            distance = np.linalg.norm(waypoints[i+1] - waypoints[i])
+            
+            # Czas podstawowy wynikający z prędkości
+            t_segment = distance / v_avg
+            
+            # DODATKOWY ZAPAS: Jeśli kąt między segmentami jest ostry (nawrót), 
+            # dajemy solverowi dodatkowy czas na wyhamowanie pędu
+            if i > 0:
+                v1 = waypoints[i] - waypoints[i-1]
+                v2 = waypoints[i+1] - waypoints[i]
+                cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+                if cos_angle < 0: # Zwrot o więcej niż 90 stopni (nawrót)
+                    t_segment *= 1.5 # Daj 50% więcej czasu na ten manewr
+                    
+            durations.append(max(2.5, t_segment)) # Segment nie może być krótszy niż 2.5s
+        return durations
+
     def _setup_hardcoded_trajectory(self):
         """Generuje i uruchamia prostą trajektorię testową (Krok po kroku)."""
         self._trajectory_generated = True
@@ -145,17 +166,20 @@ class ControllerNode(Node):
         # --- PROSTY ZESTAW WAYPOINTÓW ---
         # Dron startuje z pozycji obecnej, leci w górę, w bok i wraca.
         waypoints = np.array([
-            start_pos,                          # Punkt 0: Start z ziemi/zawisu
-            [1.5, 1.5, 1.2],       # Punkt 1: Płynne wzniesienie na 1.2 metra
-            [4.0, 4.0, 1.6],           # Punkt 2: Lot 1 metr w przód (oś X)
-            # [2.5, 1.5, 1.2],                    # Punkt 3: Lot 1 metr w bok (oś Y)
-            # [3.0, 1.5, 1.2]   # Punkt 4: Powrót nad punkt startowy
+            start_pos,                # Punkt 0: Start
+            [-0.5, 1.0, 1.2],
+            [-1.5, 2.0, 1.2],          # Punkt 1: Dystans = 2.44m -> Duży skok, potrzebuje czasu
+            [-2.0, 2.0, 1.2],          # Punkt 2: Dystans = 1.63m -> Zmiana kierunku i wznoszenie
+            [-3.3, 1.2, 1.2],          # Punkt 3: Dystans = 0.73m -> Mały powrót, krótki czas!
+            [-2.5, 0.8, 1.2],          # Punkt 2: Dystans = 1.63m -> Zmiana kierunku i wznoszenie
+            [-1.8, 0.4, 1.2],          # Punkt 1: Dystans = 2.44m -> Duży skok, potrzebuje czasu
+            [-1.2, 0.0, 1.2],
+            
+            # [1.0, 1.0, 1.2]           # Punkt 4: Dystans = 0.53m -> Krótkie doprecyzowanie
         ])
 
-        # --- CZASY DLA KAŻDEGO SEGMENTU (w sekundach) ---
-        # Dajemy dronowi sporo czasu (3 sekundy na odcinek 1-metrowy), 
-        # aby ruch był spokojny i łatwy do zaobserwowania w symulatorze.
-        segment_durations = [10, 8]
+        # Czasy idealnie skorelowane z fizyczną długością każdego segmentu:
+        segment_durations = [9, 7, 7, 7, 7, 7, 7] # Każdy segment ma 7 sekund (łącznie 49s trajektorii)
 
         total_traj_time = sum(segment_durations)
         self.get_logger().info(f"Całkowity czas prostej trajektorii: {total_traj_time:.2f} sekund.")
@@ -184,6 +208,69 @@ class ControllerNode(Node):
             'w_dot': np.zeros(3),
             'yaw': 0.0
         }
+    
+    def compute_reference_quaternion(self, acc_des: np.ndarray, yaw_des: float, gravity: float = 9.81) -> np.ndarray:
+        """
+        Wyznacza pełny kwaternion referencyjny [w, x, y, z] na podstawie
+        żądanego przyspieszenia liniowego oraz zadanego kąta Yaw.
+        """
+        # Całkowita żądana siła (przyspieszenie + kompensacja grawitacji)
+        # Zakładamy, że jednostkowa masa m=1, bo interesuje nas tylko kierunek
+        z_g = np.array([0.0, 0.0, gravity])
+        f_des = acc_des + z_g
+        
+        f_norm = np.linalg.norm(f_des)
+        if f_norm < 1e-6:
+            z_B_des = np.array([0.0, 0.0, 1.0])
+        else:
+            z_B_des = f_des / f_norm
+            
+        # Rzut osi X na płaszczyznę poziomą przy zadanym Yaw
+        x_c = np.array([np.cos(yaw_des), np.sin(yaw_des), 0.0])
+        
+        # Budowa macierzy rotacji R_des
+        y_B_des = np.cross(z_B_des, x_c)
+        y_B_norm = np.linalg.norm(y_B_des)
+        if y_B_norm < 1e-6:
+            # Przypadek osobliwy - dron leci idealnie pionowo, bazujemy na czystym obrocie Z
+            y_B_des = np.array([-np.sin(yaw_des), np.cos(yaw_des), 0.0])
+        else:
+            y_B_des = y_B_des / y_B_norm
+            
+        x_B_des = np.cross(y_B_des, z_B_des)
+        R_des = np.column_stack([x_B_des, y_B_des, z_B_des])
+        
+        # Konwersja macierzy rotacji 3x3 na kwaternion [w, x, y, z]
+        # Używamy bezpiecznej numerycznie metody Shepperda lub standardowej konwersji:
+        t = np.trace(R_des)
+        if t > 0:
+            M = np.sqrt(t + 1.0) * 2.0
+            qw = 0.25 * M
+            qx = (R_des[2, 1] - R_des[1, 2]) / M
+            qy = (R_des[0, 2] - R_des[2, 0]) / M
+            qz = (R_des[1, 0] - R_des[0, 1]) / M
+        else:
+            # Bezpieczne fallbacki dla dużych obrotów
+            if (R_des[0, 0] > R_des[1, 1]) and (R_des[0, 0] > R_des[2, 2]):
+                M = np.sqrt(1.0 + R_des[0, 0] - R_des[1, 1] - R_des[2, 2]) * 2.0
+                qw = (R_des[2, 1] - R_des[1, 2]) / M
+                qx = 0.25 * M
+                qy = (R_des[0, 1] + R_des[1, 0]) / M
+                qz = (R_des[0, 2] + R_des[2, 0]) / M
+            elif R_des[1, 1] > R_des[2, 2]:
+                M = np.sqrt(1.0 + R_des[1, 1] - R_des[0, 0] - R_des[2, 2]) * 2.0
+                qw = (R_des[0, 2] - R_des[2, 0]) / M
+                qx = (R_des[0, 1] + R_des[1, 0]) / M
+                qy = 0.25 * M
+                qz = (R_des[1, 2] + R_des[2, 1]) / M
+            else:
+                M = np.sqrt(1.0 + R_des[2, 2] - R_des[0, 0] - R_des[1, 1]) * 2.0
+                qw = (R_des[1, 0] - R_des[0, 1]) / M
+                qx = (R_des[0, 2] + R_des[2, 0]) / M
+                qy = (R_des[1, 2] + R_des[2, 1]) / M
+                qz = 0.25 * M
+
+        return np.array([qw, qx, qy, qz])
 
     def _control_loop(self):
         # Log ratunkowy w przypadku braku odometrii
@@ -193,100 +280,108 @@ class ControllerNode(Node):
                 self.get_logger().warn("⚠️ Oczekiwanie na odometrię... Sprawdź poprawność topicu /crazyflie/odom")
                 self._last_debug_log_ns = now_ns
             return
-
-        now_sec = self.get_clock().now().nanoseconds / 1e9
-        flat_state = self._trajectory_server.update(now_sec)
-        
-        if flat_state is not None:
-            target_state = {
-                'pos': flat_state['pos'],
-                'vel': flat_state['vel'],
-                'acc': flat_state['acc'],
-                'quat': np.array([1.0, 0.0, 0.0, 0.0]),
-                'omega': np.array([0.0, 0.0, flat_state['yaw_rate']]),
-                'w_dot': np.array([0.0, 0.0, flat_state['yaw_acc']]),
-                'yaw': flat_state['yaw']
-            }
-            mode_string = "TRAJECTORY"
-
-            # NOWOŚĆ: Ciągle zapamiętujemy ostatni stan z aktywny trajektorii
-            self._last_valid_target_state = target_state.copy()
-
-            # Rejestrujemy dane do wykresu porównawczego
-            self._time_history.append(now_sec)
-            self._pos_actual_history.append(self.current_state.position.copy())
-            self._pos_target_history.append(target_state['pos'].copy())
-
-        else:
-            # NOWOŚĆ: Jeśli mamy zapisany ostatni stan trajektorii, wykonujemy
-            # krótki manewr final-approach: obliczamy żądaną prędkość i przyspieszenie
-            # tak, aby po upływie krótkiego czasu `tf` osiągnąć punkt końcowy.
-            if self._last_valid_target_state is not None:
-                # Parametr czasu podejścia - jak szybko spróbujemy dotrzeć do punktu
-                tf = 1.5  # [s] - krótki final approach
-
-                pos_target = np.asarray(self._last_valid_target_state['pos'], dtype=float)
-                pos_curr = np.asarray(self.current_state.position, dtype=float)
-                vel_curr = np.asarray(self.current_state.linear_velocity, dtype=float)
-
-                # Żądana prędkość do osiągnięcia punktu w czasie tf
-                vel_des = (pos_target - pos_curr) / tf
-                max_vel = 2.0
-                vnorm = float(np.linalg.norm(vel_des))
-                if vnorm > max_vel and vnorm > 1e-6:
-                    vel_des *= (max_vel / vnorm)
-
-                # Feedforward przyspieszenie potrzebne do osiągnięcia punktu w czasie tf
-                acc_des = 2.0 * (pos_target - pos_curr - vel_curr * tf) / (tf**2)
-                max_acc = 5.0
-                anorm = float(np.linalg.norm(acc_des))
-                if anorm > max_acc and anorm > 1e-6:
-                    acc_des *= (max_acc / anorm)
-
-                target_state = {
-                    'pos': pos_target,        # Trzymaj ostatnią pozycję X, Y, Z
-                    'vel': vel_des,           # Zaimplementowana żądana prędkość podejścia
-                    'acc': acc_des,           # Feedforward przyspieszenie końcowe
-                    'quat': np.array([1.0, 0.0, 0.0, 0.0]),
-                    'omega': np.zeros(3),     # Zeruj prędkości kątowe
-                    'w_dot': np.zeros(3),
-                    'yaw': self._last_valid_target_state['yaw']
-                }
-                mode_string = "FINAL_APPROACH"
-            else:
-                # Wypadek awaryjny (jeśli trajektoria w ogóle nie wystartowała)
-                target_state = self._get_default_hover_state()
-                mode_string = "HOVER_DEFAULT"
+        if (self.get_clock().now().nanoseconds >= 6_000_000_000):
+            now_sec = self.get_clock().now().nanoseconds / 1e9 - 6.0
+            flat_state = self._trajectory_server.update(now_sec)
             
-            # Jeśli trajektoria właśnie się skończyła, a my zebraliśmy dane -> Generujemy raport
-            if len(self._pos_target_history) > 0 and not self._plots_generated:
-                self._plots_generated = True
-                self._generate_ground_truth_plots()
+            if flat_state is not None:
+                ref_quaternion = self.compute_reference_quaternion(
+                    acc_des=flat_state['acc'], 
+                    yaw_des=flat_state['yaw'],
+                    gravity=9.81
+                )
 
-        
+                # 2. Przypisz go poprawnie do struktury danych
+                target_state = {
+                    'pos': flat_state['pos'],
+                    'vel': flat_state['vel'],
+                    'acc': flat_state['acc'],
+                    'quat': ref_quaternion,  # <--- TUTAJ! Koniec z oszukiwaniem kontrolera!
+                    'omega': np.array([0.0, 0.0, flat_state['yaw_rate']]),
+                    'w_dot': np.array([0.0, 0.0, flat_state['yaw_acc']]),
+                    'yaw': flat_state['yaw']
+                }
+                mode_string = "TRAJECTORY"
 
-        # Obliczenie komend sterujących Mellingera
-        thrust, torque = self._controller.compute_control(self.current_state, target_state)
+                # NOWOŚĆ: Ciągle zapamiętujemy ostatni stan z aktywny trajektorii
+                self._last_valid_target_state = target_state.copy()
 
-        # Log diagnostyczny (1 Hz)
-        now_ns = self.get_clock().now().nanoseconds
-        if now_ns - self._last_debug_log_ns >= 1_000_000_000:
-            self.get_logger().info(
-                f'[{mode_string}] pos=[{self.current_state.position[0]:.2f}, {self.current_state.position[1]:.2f}, {self.current_state.position[2]:.2f}] '
-                f'target=[{target_state["pos"][0]:.2f}, {target_state["pos"][1]:.2f}, {target_state["pos"][2]:.2f}] thrust={thrust:.4f}'
-            )
-            self._last_debug_log_ns = now_ns
+                # Rejestrujemy dane do wykresu porównawczego
+                self._time_history.append(now_sec)
+                self._pos_actual_history.append(self.current_state.position.copy())
+                self._pos_target_history.append(target_state['pos'].copy())
 
-        # Publikacja
-        msg = ThrustAndTorque()
-        msg.timestamp = now_ns
-        msg.collective_thrust = thrust  # Ograniczenie do rozsądnego zakresu
-        msg.torque = Vector3(
-            x=float(torque[0]),
-            y=float(torque[1]),
-            z=float(torque[2]),
-        )
-        self.command_publisher.publish(msg)
+            else:
+                # NOWOŚĆ: Jeśli mamy zapisany ostatni stan trajektorii, wykonujemy
+                # krótki manewr final-approach: obliczamy żądaną prędkość i przyspieszenie
+                # tak, aby po upływie krótkiego czasu `tf` osiągnąć punkt końcowy.
+                if self._last_valid_target_state is not None:
+                    # Parametr czasu podejścia - jak szybko spróbujemy dotrzeć do punktu
+                    tf = 1.5  # [s] - krótki final approach
+
+                    pos_target = np.asarray(self._last_valid_target_state['pos'], dtype=float)
+                    pos_curr = np.asarray(self.current_state.position, dtype=float)
+                    vel_curr = np.asarray(self.current_state.linear_velocity, dtype=float)
+
+                    # Żądana prędkość do osiągnięcia punktu w czasie tf
+                    vel_des = (pos_target - pos_curr) / tf
+                    max_vel = 2.0
+                    vnorm = float(np.linalg.norm(vel_des))
+                    if vnorm > max_vel and vnorm > 1e-6:
+                        vel_des *= (max_vel / vnorm)
+
+                    # Feedforward przyspieszenie potrzebne do osiągnięcia punktu w czasie tf
+                    acc_des = 2.0 * (pos_target - pos_curr - vel_curr * tf) / (tf**2)
+                    max_acc = 5.0
+                    anorm = float(np.linalg.norm(acc_des))
+                    if anorm > max_acc and anorm > 1e-6:
+                        acc_des *= (max_acc / anorm)
+
+                    target_state = {
+                        'pos': pos_target,        # Trzymaj ostatnią pozycję X, Y, Z
+                        'vel': vel_des,           # Zaimplementowana żądana prędkość podejścia
+                        'acc': acc_des,           # Feedforward przyspieszenie końcowe
+                        'quat': np.array([1.0, 0.0, 0.0, 0.0]),
+                        'omega': np.zeros(3),     # Zeruj prędkości kątowe
+                        'w_dot': np.zeros(3),
+                        'yaw': self._last_valid_target_state['yaw']
+                    }
+                    mode_string = "FINAL_APPROACH"
+                else:
+                    # Wypadek awaryjny (jeśli trajektoria w ogóle nie wystartowała)
+                    target_state = self._get_default_hover_state()
+                    mode_string = "HOVER_DEFAULT"
+                
+                # Jeśli trajektoria właśnie się skończyła, a my zebraliśmy dane -> Generujemy raport
+                if len(self._pos_target_history) > 0 and not self._plots_generated:
+                    self._plots_generated = True
+                    self._generate_ground_truth_plots()
+
+            
+
+            # Obliczenie komend sterujących Mellingera
+            thrust, torque = self._controller.compute_control(self.current_state, target_state)
+
+            # Log diagnostyczny (1 Hz)
+            now_ns = self.get_clock().now().nanoseconds
+            if now_ns - self._last_debug_log_ns >= 1_000_000_000:
+                self.get_logger().info(
+                    f'Czas: {now_sec:.2f}'
+                    f'[{mode_string}] pos=[{self.current_state.position[0]:.2f}, {self.current_state.position[1]:.2f}, {self.current_state.position[2]:.2f}] '
+                    f'target=[{target_state["pos"][0]:.2f}, {target_state["pos"][1]:.2f}, {target_state["pos"][2]:.2f}] thrust={thrust:.4f}'
+                )
+                self._last_debug_log_ns = now_ns
+
+            
+
+            # Publikacja
+            # thrust = np.clip(thrust, 0.05, 0.4)
+
+            # Publikacja bezpiecznych sterowań
+            msg = ThrustAndTorque()
+            msg.collective_thrust = float(np.clip(thrust, 0.05, 1))
+            msg.torque = Vector3(x=float(torque[0]), y=float(torque[1]), z=float(torque[2]))
+            self.command_publisher.publish(msg)
 
     def _generate_ground_truth_plots(self):
         """Generuje pliki PNG z porównaniem trajektorii i zapisuje je w folderze pakietu."""

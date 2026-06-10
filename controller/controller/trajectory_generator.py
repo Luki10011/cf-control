@@ -38,8 +38,8 @@ class PolynomialTrajectory:
 
     def evaluate(self, t):
         """
-        Zwraca pełny stan trajektorii w czasie t, dopasowany do
-        wejścia transformacji flat_to_state oraz kontrolera Mellingera.
+        Zwraca pełny stan trajektorii w czasie t z bezpiecznym, 
+        dynamicznym wyliczaniem kąta Yaw na podstawie wektora prędkości.
         """
         idx, lt = self._get_segment_index_and_local_time(t)
         
@@ -49,31 +49,46 @@ class PolynomialTrajectory:
         cz = self.coefs['z'][idx]
         
         # --- OBLICZENIA DLA POZYCJI X, Y, Z (Wielomian 7. stopnia) ---
-        # Przygotowujemy wektory potęg czasu lokalnego dla pozycji i kolejnych pochodnych
         t_pos   = np.array([1.0, lt, lt**2, lt**3, lt**4, lt**5, lt**6, lt**7])
         t_vel   = np.array([0.0, 1.0, 2*lt, 3*lt**2, 4*lt**3, 5*lt**4, 6*lt**5, 7*lt**6])
         t_acc   = np.array([0.0, 0.0, 2.0, 6*lt, 12*lt**2, 20*lt**3, 30*lt**4, 42*lt**5])
         t_jerk  = np.array([0.0, 0.0, 0.0, 6.0, 24*lt, 60*lt**2, 120*lt**3, 210*lt**4])
         t_snap  = np.array([0.0, 0.0, 0.0, 0.0, 24.0, 120*lt, 360*lt**2, 840*lt**3])
         
-        # Iloczyn skalarny (mnożenie współczynników przez potęgi czasu) daje nam wartości pochodnych
         pos  = np.array([np.dot(cx, t_pos),  np.dot(cy, t_pos),  np.dot(cz, t_pos)])
         vel  = np.array([np.dot(cx, t_vel),  np.dot(cy, t_vel),  np.dot(cz, t_vel)])
         acc  = np.array([np.dot(cx, t_acc),  np.dot(cy, t_acc),  np.dot(cz, t_acc)])
         jerk = np.array([np.dot(cx, t_jerk), np.dot(cy, t_jerk), np.dot(cz, t_jerk)])
         snap = np.array([np.dot(cx, t_snap), np.dot(cy, t_snap), np.dot(cz, t_snap)])
 
-        # --- OBLICZENIA DLA YAW (Wielomian 3. stopnia) ---
-        cyaw = self.yaw_coefs[idx]
-        t_yaw      = np.array([1.0, lt, lt**2, lt**3])
-        t_yaw_dot  = np.array([0.0, 1.0, 2*lt, 3*lt**2])
-        t_yaw_ddot = np.array([0.0, 0.0, 2.0, 6*lt])
+        # --- BEZPIECZNE DYNAMICZNE OBLICZENIA DLA YAW ---
+        vel_xy_norm_sq = vel[0]**2 + vel[1]**2
+        vel_xy_norm = np.sqrt(vel_xy_norm_sq)
         
-        yaw      = np.dot(cyaw, t_yaw)
-        yaw_rate = np.dot(cyaw, t_yaw_dot)
-        yaw_acc  = np.dot(cyaw, t_yaw_ddot)
+        # Próg prędkości (0.15 m/s) zapobiega wariowaniu arctan2 w bezruchu
+        if vel_xy_norm < 0.15:
+            # Jeśli dron prawie się nie porusza w XY, zachowaj ostatni znany kąt yaw
+            if not hasattr(self, 'last_yaw'):
+                self.last_yaw = 0.0
+            yaw = self.last_yaw
+            yaw_rate = 0.0
+            yaw_acc = 0.0
+        else:
+            # Oblicz bieżący yaw z kierunku prędkości postępowej
+            yaw = np.arctan2(vel[1], vel[0])
+            
+            # Zapamiętujemy udany stan yaw
+            self.last_yaw = yaw
+            
+            # Analityczna pochodna yaw_rate = (vx*ay - vy*ax) / (vx^2 + vy^2)
+            yaw_rate = (vel[0] * acc[1] - vel[1] * acc[0]) / vel_xy_norm_sq
+            
+            # Twarde nasycenie (saturacja) prędkości obrotu dla ochrony pętli KOmega
+            yaw_rate = np.clip(yaw_rate, -1.0, 1.0) # max 1 radian na sekundę
+            
+            # Dla wygładzenia trajektorii i stabilizacji kaskady pomijamy szumiącą drugą pochodną
+            yaw_acc = 0.0
 
-        # Zwracamy spakowany stan gotowy do przekazania do calculate_state_from_flat_inputs
         return {
             'pos': pos,
             'vel': vel,
