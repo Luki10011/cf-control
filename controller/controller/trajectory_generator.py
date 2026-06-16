@@ -38,10 +38,11 @@ class PolynomialTrajectory:
 
     def evaluate(self, t):
         """
-        Zwraca pełny stan trajektorii w czasie t, dopasowany do
-        wejścia transformacji flat_to_state oraz kontrolera Mellingera.
+        Zwraca pełny stan trajektorii w czasie t, przeliczony ze znormalizowanego czasu tau.
         """
         idx, lt = self._get_segment_index_and_local_time(t)
+        T = self.durations[idx] # Pobieramy czas trwania obecnego segmentu
+        tau = lt / T            # Czas znormalizowany tau in [0, 1]
         
         # Pobieramy współczynniki wielomianów 7. stopnia dla tego segmentu
         cx = self.coefs['x'][idx]
@@ -49,38 +50,32 @@ class PolynomialTrajectory:
         cz = self.coefs['z'][idx]
         
         # --- OBLICZENIA DLA POZYCJI X, Y, Z (Wielomian 7. stopnia) ---
-        # Przygotowujemy wektory potęg czasu lokalnego dla pozycji i kolejnych pochodnych
-        t_pos   = np.array([1.0, lt, lt**2, lt**3, lt**4, lt**5, lt**6, lt**7])
-        t_vel   = np.array([0.0, 1.0, 2*lt, 3*lt**2, 4*lt**3, 5*lt**4, 6*lt**5, 7*lt**6])
-        t_acc   = np.array([0.0, 0.0, 2.0, 6*lt, 12*lt**2, 20*lt**3, 30*lt**4, 42*lt**5])
-        t_jerk  = np.array([0.0, 0.0, 0.0, 6.0, 24*lt, 60*lt**2, 120*lt**3, 210*lt**4])
-        t_snap  = np.array([0.0, 0.0, 0.0, 0.0, 24.0, 120*lt, 360*lt**2, 840*lt**3])
+        # Używamy tau do potęg
+        t_pos  = np.array([1.0, tau, tau**2, tau**3, tau**4, tau**5, tau**6, tau**7])
+        t_vel  = np.array([0.0, 1.0, 2*tau, 3*tau**2, 4*tau**3, 5*tau**4, 6*tau**5, 7*tau**6])
+        t_acc  = np.array([0.0, 0.0, 2.0, 6*tau, 12*tau**2, 20*tau**3, 30*tau**4, 42*tau**5])
+        t_jerk = np.array([0.0, 0.0, 0.0, 6.0, 24*tau, 60*tau**2, 120*tau**3, 210*tau**4])
+        t_snap = np.array([0.0, 0.0, 0.0, 0.0, 24.0, 120*tau, 360*tau**2, 840*tau**3])
         
-        # Iloczyn skalarny (mnożenie współczynników przez potęgi czasu) daje nam wartości pochodnych
+        # Iloczyn skalarny ORAZ skalowanie wynikające z reguły łańcuchowej (1/T^k)
         pos  = np.array([np.dot(cx, t_pos),  np.dot(cy, t_pos),  np.dot(cz, t_pos)])
-        vel  = np.array([np.dot(cx, t_vel),  np.dot(cy, t_vel),  np.dot(cz, t_vel)])
-        acc  = np.array([np.dot(cx, t_acc),  np.dot(cy, t_acc),  np.dot(cz, t_acc)])
-        jerk = np.array([np.dot(cx, t_jerk), np.dot(cy, t_jerk), np.dot(cz, t_jerk)])
-        snap = np.array([np.dot(cx, t_snap), np.dot(cy, t_snap), np.dot(cz, t_snap)])
+        vel  = np.array([np.dot(cx, t_vel),  np.dot(cy, t_vel),  np.dot(cz, t_vel)])  * (1.0 / T)
+        acc  = np.array([np.dot(cx, t_acc),  np.dot(cy, t_acc),  np.dot(cz, t_acc)])  * (1.0 / T**2)
+        jerk = np.array([np.dot(cx, t_jerk), np.dot(cy, t_jerk), np.dot(cz, t_jerk)]) * (1.0 / T**3)
+        snap = np.array([np.dot(cx, t_snap), np.dot(cy, t_snap), np.dot(cz, t_snap)]) * (1.0 / T**4)
 
-        # --- OBLICZENIA DLA YAW (Wielomian 3. stopnia) ---
+        # --- OBLICZENIA DLA YAW ---
+        # Jeśli yaw jest w czasie znormalizowanym, traktujemy je analogicznie
         cyaw = self.yaw_coefs[idx]
-        t_yaw      = np.array([1.0, lt, lt**2, lt**3])
-        t_yaw_dot  = np.array([0.0, 1.0, 2*lt, 3*lt**2])
-        t_yaw_ddot = np.array([0.0, 0.0, 2.0, 6*lt])
+        t_yaw      = np.array([1.0, tau, tau**2, tau**3])
+        t_yaw_dot  = np.array([0.0, 1.0, 2*tau, 3*tau**2])
+        t_yaw_ddot = np.array([0.0, 0.0, 2.0, 6*tau])
         
         yaw      = np.dot(cyaw, t_yaw)
-        yaw_rate = np.dot(cyaw, t_yaw_dot)
-        yaw_acc  = np.dot(cyaw, t_yaw_ddot)
+        yaw_rate = np.dot(cyaw, t_yaw_dot) * (1.0 / T)
+        yaw_acc  = np.dot(cyaw, t_yaw_ddot) * (1.0 / T**2)
 
-        # Zwracamy spakowany stan gotowy do przekazania do calculate_state_from_flat_inputs
         return {
-            'pos': pos,
-            'vel': vel,
-            'acc': acc,
-            'jerk': jerk,
-            'snap': snap,
-            'yaw': yaw,
-            'yaw_rate': yaw_rate,
-            'yaw_acc': yaw_acc
+            'pos': pos, 'vel': vel, 'acc': acc, 'jerk': jerk, 'snap': snap,
+            'yaw': yaw, 'yaw_rate': yaw_rate, 'yaw_acc': yaw_acc
         }

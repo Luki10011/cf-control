@@ -7,34 +7,43 @@ class MinimumSnapGenerator:
         pass
 
     def _compute_single_segment_H(self, T):
-        """Generuje macierz kosztu Snap (8x8) dla jednego segmentu o czasie T."""
+        """Znormalizowana macierz kosztu Snap (8x8) dla jednego segmentu."""
         H = np.zeros((8, 8))
-        # Całkowanie kwadratu 4. pochodnej wielomianu 7. stopnia:
-        # p^(4)(t) = 24*c4 + 120*c5*t + 360*c6*t^2 + 840*c7*t^3
-        # Współczynniki wynikają bezpośrednio z analitycznego wyznaczenia całek wektorowych.
-        H[4, 4] = 576 * T
-        H[4, 5] = H[5, 4] = 1440 * T**2
-        H[4, 6] = H[6, 4] = 2880 * T**3
-        H[4, 7] = H[7, 4] = 5040 * T**4
+        # Obliczamy analityczne stałe dla znormalizowanego czasu tau in [0, 1] (czyli T=1.0)
+        H[4, 4] = 576
+        H[4, 5] = H[5, 4] = 1440
+        H[4, 6] = H[6, 4] = 2880
+        H[4, 7] = H[7, 4] = 5040
         
-        H[5, 5] = 4800 * T**3
-        H[5, 6] = H[6, 5] = 10800 * T**4
-        H[5, 7] = H[7, 5] = 20160 * T**5
+        H[5, 5] = 4800
+        H[5, 6] = H[6, 5] = 10800
+        H[5, 7] = H[7, 5] = 20160
         
-        H[6, 6] = 25920 * T**5
-        H[6, 7] = H[7, 6] = 50400 * T**6
+        H[6, 6] = 25920
+        H[6, 7] = H[7, 6] = 50400
         
-        H[7, 7] = 100800 * T**7
-        return H
+        H[7, 7] = 100800
+        
+        # Skalowanie macierzy - klucz do stabilności numerycznej
+        scale_factor = 1.0 / (T**7)
+        return H * scale_factor
 
-    def _generate_derivatives_vector(self, order, t):
-        """Pomocniczy wektor pochodnych dla wielomianu 7. stopnia w czasie t."""
-        if order == 0: return np.array([1.0, t, t**2, t**3, t**4, t**5, t**6, t**7])
-        if order == 1: return np.array([0.0, 1.0, 2*t, 3*t**2, 4*t**3, 5*t**4, 6*t**5, 7*t**6])
-        if order == 2: return np.array([0.0, 0.0, 2.0, 6*t, 12*t**2, 20*t**3, 30*t**4, 42*t**5])
-        if order == 3: return np.array([0.0, 0.0, 0.0, 6.0, 24*t, 60*t**2, 120*t**3, 210*t**4])
-        if order == 4: return np.array([0.0, 0.0, 0.0, 0.0, 24.0, 120*t, 360*t**2, 840*t**3])
-        return np.zeros(8)
+    def _generate_derivatives_vector(self, order, tau, T):
+        """
+        Znormalizowany wektor pochodnych.
+        tau: znormalizowany czas w [0, 1] (0.0 dla startu, 1.0 dla końca)
+        T: rzeczywisty czas trwania segmentu (do skalowania)
+        """
+        vec = np.zeros(8)
+        if order == 0: vec = np.array([1.0, tau, tau**2, tau**3, tau**4, tau**5, tau**6, tau**7])
+        elif order == 1: vec = np.array([0.0, 1.0, 2*tau, 3*tau**2, 4*tau**3, 5*tau**4, 6*tau**5, 7*tau**6])
+        elif order == 2: vec = np.array([0.0, 0.0, 2.0, 6*tau, 12*tau**2, 20*tau**3, 30*tau**4, 42*tau**5])
+        elif order == 3: vec = np.array([0.0, 0.0, 0.0, 6.0, 24*tau, 60*tau**2, 120*tau**3, 210*tau**4])
+        elif order == 4: vec = np.array([0.0, 0.0, 0.0, 0.0, 24.0, 120*tau, 360*tau**2, 840*tau**3])
+        
+        # Reguła łańcuchowa dla czasu rzeczywistego
+        scale = 1.0 / (T**order)
+        return vec * scale
 
     def generate_trajectory(self, waypoints, segment_durations):
         """
@@ -71,13 +80,13 @@ class MinimumSnapGenerator:
                 
                 # Początek segmentu i musi być w punkcie waypoints[i]
                 row_start = np.zeros(total_coefs)
-                row_start[start_idx:start_idx+8] = self._generate_derivatives_vector(0, 0.0)
+                row_start[start_idx:start_idx+8] = self._generate_derivatives_vector(0, 0.0, T)
                 A_eq.append(row_start)
                 b_eq.append(waypoints[i, axis_idx])
                 
                 # Koniec segmentu i musi być w punkcie waypoints[i+1]
                 row_end = np.zeros(total_coefs)
-                row_end[start_idx:start_idx+8] = self._generate_derivatives_vector(0, T)
+                row_end[start_idx:start_idx+8] = self._generate_derivatives_vector(0, 1.0, T)
                 A_eq.append(row_end)
                 b_eq.append(waypoints[i+1, axis_idx])
 
@@ -91,8 +100,8 @@ class MinimumSnapGenerator:
                 for order in range(1, 5):
                     row_continuity = np.zeros(total_coefs)
                     # pochodna na końcu obecnego segmentu minus pochodna na początku następnego ma dać 0
-                    row_continuity[idx_curr:idx_curr+8] = self._generate_derivatives_vector(order, T_curr)
-                    row_continuity[idx_next:idx_next+8] = -self._generate_derivatives_vector(order, 0.0)
+                    row_continuity[idx_curr:idx_curr+8] = self._generate_derivatives_vector(order, 1.0, T_curr)
+                    row_continuity[idx_next:idx_next+8] = -self._generate_derivatives_vector(order, 0.0, segment_durations[i+1])
                     A_eq.append(row_continuity)
                     b_eq.append(0.0)
 
@@ -100,7 +109,7 @@ class MinimumSnapGenerator:
             # Start (segment 0, t=0): vel=0, acc=0
             for order in [1, 2]:
                 row_bound = np.zeros(total_coefs)
-                row_bound[0:8] = self._generate_derivatives_vector(order, 0.0)
+                row_bound[0:8] = self._generate_derivatives_vector(order, 0.0, segment_durations[0])
                 A_eq.append(row_bound)
                 b_eq.append(0.0)
                 
@@ -109,7 +118,7 @@ class MinimumSnapGenerator:
             idx_last = (num_segments - 1) * num_coefs_per_segment
             for order in [1, 2]:
                 row_bound = np.zeros(total_coefs)
-                row_bound[idx_last:idx_last+8] = self._generate_derivatives_vector(order, T_last)
+                row_bound[idx_last:idx_last+8] = self._generate_derivatives_vector(order, 1.0, T_last)
                 A_eq.append(row_bound)
                 b_eq.append(0.0)
 
@@ -118,19 +127,40 @@ class MinimumSnapGenerator:
             b_eq = np.array(b_eq)
 
             # Definicja ograniczeń równościowych dla scipy.optimize
-            constraints = {'type': 'eq', 'fun': lambda c: np.dot(A_eq, c) - b_eq}
+            num_constraints = A_eq.shape[0]
+
+            # Zbudowanie macierzy KKT (lewa strona układu równań)
+            # Używamy np.block do stworzenia macierzy blokowej:
+            # [ H_global   A_eq.T ]
+            # [ A_eq       0      ]
+            KKT_left = np.block([
+                [H_global, A_eq.T],
+                [A_eq, np.zeros((num_constraints, num_constraints))]
+            ])
+
+            # Zbudowanie wektora prawej strony:
+            # [ 0    ] (rozmiaru total_coefs)
+            # [ b_eq ] (rozmiaru num_constraints)
+            KKT_right = np.concatenate([np.zeros(total_coefs), b_eq])
+
+            try:
+                # Rozwiązanie układu równań liniowych
+                solution = np.linalg.solve(KKT_left, KKT_right)
+                
+                # Wyciągnięcie tylko współczynników 'c' (pierwsze total_coefs elementów)
+                c_optimal = solution[:total_coefs]
+                
+                # Zapisanie wyników i przeformatowanie do macierzy (N, 8)
+                coefficients_output[axis_name] = c_optimal.reshape((num_segments, num_coefs_per_segment))
+                
+            except np.linalg.LinAlgError as e:
+                raise RuntimeError(f"Rozwiązanie Minimum Snap nie powiodło się dla osi {axis_name}. Macierz KKT jest osobliwa. {e}")
             
-            # Punkt startowy optymalizacji (same zera)
-            c0 = np.zeros(total_coefs)
-            
-            # Uruchomienie solvera QP
-            res = minimize(cost_function, c0, method='SLSQP', constraints=constraints, options={'maxiter': 1000})
-            
-            if not res.success:
-                raise RuntimeError(f"Optymalizacja Minimum Snap nie powiodła się dla osi {axis_name}: {res.message}")
+            # if not res.success:
+            #     raise RuntimeError(f"Optymalizacja Minimum Snap nie powiodła się dla osi {axis_name}: {res.message}")
             
             # Zapisanie wyników i przeformatowanie do macierzy (N, 8)
-            coefficients_output[axis_name] = res.x.reshape((num_segments, num_coefs_per_segment))
+            # coefficients_output[axis_name] = res.x.reshape((num_segments, num_coefs_per_segment))
 
         # Zwracamy gotowy obiekt trajektorii wielomianowej
         return PolynomialTrajectory(coefficients_output, segment_durations)

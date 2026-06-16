@@ -147,15 +147,16 @@ class ControllerNode(Node):
         waypoints = np.array([
             start_pos,                          # Punkt 0: Start z ziemi/zawisu
             [1.5, 1.5, 1.2],       # Punkt 1: Płynne wzniesienie na 1.2 metra
-            [4.0, 4.0, 1.6],           # Punkt 2: Lot 1 metr w przód (oś X)
-            # [2.5, 1.5, 1.2],                    # Punkt 3: Lot 1 metr w bok (oś Y)
-            # [3.0, 1.5, 1.2]   # Punkt 4: Powrót nad punkt startowy
+            [3.0, 2.5, 2.6],           # Punkt 2: Lot 1 metr w przód (oś X)
+            [2.5, 3.5, 1.2],                    # Punkt 3: Lot 1 metr w bok (oś Y)
+            [1.0, 4.0, 1.0],   # Punkt 4: Powrót nad punkt startowy
+            [0.0, 4.5, 0.5],   # Punkt 5: Lądowanie (pozycja niższa niż start)
         ])
 
         # --- CZASY DLA KAŻDEGO SEGMENTU (w sekundach) ---
         # Dajemy dronowi sporo czasu (3 sekundy na odcinek 1-metrowy), 
         # aby ruch był spokojny i łatwy do zaobserwowania w symulatorze.
-        segment_durations = [10, 8]
+        segment_durations = [10, 12, 13, 12, 14]
 
         total_traj_time = sum(segment_durations)
         self.get_logger().info(f"Całkowity czas prostej trajektorii: {total_traj_time:.2f} sekund.")
