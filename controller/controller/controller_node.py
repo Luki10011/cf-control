@@ -147,16 +147,16 @@ class ControllerNode(Node):
         waypoints = np.array([
             start_pos,                          # Punkt 0: Start z ziemi/zawisu
             [1.5, 1.5, 1.2],       # Punkt 1: Płynne wzniesienie na 1.2 metra
-            [3.0, 2.5, 2.6],           # Punkt 2: Lot 1 metr w przód (oś X)
-            [2.5, 3.5, 1.2],                    # Punkt 3: Lot 1 metr w bok (oś Y)
-            [1.0, 4.0, 1.0],   # Punkt 4: Powrót nad punkt startowy
-            [0.0, 4.5, 0.5],   # Punkt 5: Lądowanie (pozycja niższa niż start)
+            [3.0, 2.5, 2.0],           # Punkt 2: Lot 1 metr w przód (oś X)
+            [3.5, 2.5, 1.8],                    # Punkt 3: Lot 1 metr w bok (oś Y)
+            [4.0, 1.0, 1.0],   # Punkt 4: Powrót nad punkt startowy
+            [4.5, 0.0, 0.5],   # Punkt 5: Lądowanie (pozycja niższa niż start)
         ])
 
         # --- CZASY DLA KAŻDEGO SEGMENTU (w sekundach) ---
         # Dajemy dronowi sporo czasu (3 sekundy na odcinek 1-metrowy), 
         # aby ruch był spokojny i łatwy do zaobserwowania w symulatorze.
-        segment_durations = [10, 12, 13, 12, 14]
+        segment_durations = [10, 12, 13, 12, 14] #13, 12, 14
 
         total_traj_time = sum(segment_durations)
         self.get_logger().info(f"Całkowity czas prostej trajektorii: {total_traj_time:.2f} sekund.")
@@ -187,107 +187,85 @@ class ControllerNode(Node):
         }
 
     def _control_loop(self):
-        # Log ratunkowy w przypadku braku odometrii
         if self.current_state is None:
-            now_ns = self.get_clock().now().nanoseconds
-            if now_ns - self._last_debug_log_ns >= 2_000_000_000:
-                self.get_logger().warn("⚠️ Oczekiwanie na odometrię... Sprawdź poprawność topicu /crazyflie/odom")
-                self._last_debug_log_ns = now_ns
+            self.get_logger().warn("⚠️ Oczekiwanie na odometrię...")
             return
 
         now_sec = self.get_clock().now().nanoseconds / 1e9
         flat_state = self._trajectory_server.update(now_sec)
         
         if flat_state is not None:
-            target_state = {
-                'pos': flat_state['pos'],
-                'vel': flat_state['vel'],
-                'acc': flat_state['acc'],
-                'quat': np.array([1.0, 0.0, 0.0, 0.0]),
-                'omega': np.array([0.0, 0.0, flat_state['yaw_rate']]),
-                'w_dot': np.array([0.0, 0.0, flat_state['yaw_acc']]),
-                'yaw': flat_state['yaw']
-            }
-            mode_string = "TRAJECTORY"
-
-            # NOWOŚĆ: Ciągle zapamiętujemy ostatni stan z aktywny trajektorii
-            self._last_valid_target_state = target_state.copy()
-
-            # Rejestrujemy dane do wykresu porównawczego
+            # --- Zbieranie danych do wykresów (TO JEST KLUCZOWE) ---
             self._time_history.append(now_sec)
-            self._pos_actual_history.append(self.current_state.position.copy())
-            self._pos_target_history.append(target_state['pos'].copy())
+            self._pos_actual_history.append(np.array(self.current_state.position))
+            self._pos_target_history.append(np.array(flat_state['pos']))
 
-        else:
-            # NOWOŚĆ: Jeśli mamy zapisany ostatni stan trajektorii, wykonujemy
-            # krótki manewr final-approach: obliczamy żądaną prędkość i przyspieszenie
-            # tak, aby po upływie krótkiego czasu `tf` osiągnąć punkt końcowy.
-            if self._last_valid_target_state is not None:
-                # Parametr czasu podejścia - jak szybko spróbujemy dotrzeć do punktu
-                tf = 1.5  # [s] - krótki final approach
-
-                pos_target = np.asarray(self._last_valid_target_state['pos'], dtype=float)
-                pos_curr = np.asarray(self.current_state.position, dtype=float)
-                vel_curr = np.asarray(self.current_state.linear_velocity, dtype=float)
-
-                # Żądana prędkość do osiągnięcia punktu w czasie tf
-                vel_des = (pos_target - pos_curr) / tf
-                max_vel = 2.0
-                vnorm = float(np.linalg.norm(vel_des))
-                if vnorm > max_vel and vnorm > 1e-6:
-                    vel_des *= (max_vel / vnorm)
-
-                # Feedforward przyspieszenie potrzebne do osiągnięcia punktu w czasie tf
-                acc_des = 2.0 * (pos_target - pos_curr - vel_curr * tf) / (tf**2)
-                max_acc = 5.0
-                anorm = float(np.linalg.norm(acc_des))
-                if anorm > max_acc and anorm > 1e-6:
-                    acc_des *= (max_acc / anorm)
-
-                target_state = {
-                    'pos': pos_target,        # Trzymaj ostatnią pozycję X, Y, Z
-                    'vel': vel_des,           # Zaimplementowana żądana prędkość podejścia
-                    'acc': acc_des,           # Feedforward przyspieszenie końcowe
-                    'quat': np.array([1.0, 0.0, 0.0, 0.0]),
-                    'omega': np.zeros(3),     # Zeruj prędkości kątowe
-                    'w_dot': np.zeros(3),
-                    'yaw': self._last_valid_target_state['yaw']
-                }
-                mode_string = "FINAL_APPROACH"
-            else:
-                # Wypadek awaryjny (jeśli trajektoria w ogóle nie wystartowała)
-                target_state = self._get_default_hover_state()
-                mode_string = "HOVER_DEFAULT"
+            # --- MPC ---
+            acc_command = self._mpc.solve(
+                pos0=self.current_state.position,
+                vel0=self.current_state.linear_velocity,
+                pos_target=flat_state['pos'],
+                vel_target=flat_state['vel'],
+                acc_ff=flat_state['acc']
+            )
             
-            # Jeśli trajektoria właśnie się skończyła, a my zebraliśmy dane -> Generujemy raport
-            if len(self._pos_target_history) > 0 and not self._plots_generated:
-                self._plots_generated = True
-                self._generate_ground_truth_plots()
+            target_state = self._create_target_from_flat(flat_state)
+            # WAŻNE: Dodajemy grawitację tutaj, aby Mellinger dostał pełne przyspieszenie
+            target_state['acc'] = acc_command
+            
+            mode_string = "MPC_TRAJECTORY"
+        else:
+            # Trajektoria skończona - generowanie wykresów
+            target_state = self._handle_trajectory_end()
+            mode_string = "HOVER_OR_LAND"
 
-        
-
-        # Obliczenie komend sterujących Mellingera
+        # Obliczenie sterowania
         thrust, torque = self._controller.compute_control(self.current_state, target_state)
 
-        # Log diagnostyczny (1 Hz)
-        now_ns = self.get_clock().now().nanoseconds
-        if now_ns - self._last_debug_log_ns >= 1_000_000_000:
-            self.get_logger().info(
-                f'[{mode_string}] pos=[{self.current_state.position[0]:.2f}, {self.current_state.position[1]:.2f}, {self.current_state.position[2]:.2f}] '
-                f'target=[{target_state["pos"][0]:.2f}, {target_state["pos"][1]:.2f}, {target_state["pos"][2]:.2f}] thrust={thrust:.4f}'
-            )
-            self._last_debug_log_ns = now_ns
+        # Publikacja
+        self._publish_control(thrust, torque, mode_string, target_state)
 
+    def _create_target_from_flat(self, fs):
+        return {
+            'pos': fs['pos'], 'vel': fs['vel'], 'acc': fs['acc'],
+            'quat': np.array([1.0, 0.0, 0.0, 0.0]),
+            'omega': np.array([0.0, 0.0, fs['yaw_rate']]),
+            'w_dot': np.array([0.0, 0.0, fs['yaw_acc']]),
+            'yaw': fs['yaw']
+        }
+
+    def _handle_trajectory_end(self):
+        # Generowanie wykresów
+        if not self._plots_generated and len(self._pos_target_history) > 0:
+            self._plots_generated = True
+            self._generate_ground_truth_plots()
+        
+        # Zamiast [0,0,1], weź ostatnią pozycję z historii
+        last_pos = self._pos_target_history[-1]
+        return {
+            'pos': last_pos,
+            'vel': np.zeros(3),
+            'acc': np.array([0, 0, 9.81]), # Grawitacja, żeby wisiał
+            'quat': np.array([1.0, 0.0, 0.0, 0.0]),
+            'omega': np.zeros(3),
+            'w_dot': np.zeros(3),
+            'yaw': 0.0 # Możesz zapisać ostatni yaw z trajektorii
+        }
+
+    def _publish_control(self, thrust, torque, mode, target):
+        now_ns = self.get_clock().now().nanoseconds
+        
         # Publikacja
         msg = ThrustAndTorque()
         msg.timestamp = now_ns
-        msg.collective_thrust = thrust  # Ograniczenie do rozsądnego zakresu
-        msg.torque = Vector3(
-            x=float(torque[0]),
-            y=float(torque[1]),
-            z=float(torque[2]),
-        )
+        msg.collective_thrust = float(thrust)
+        msg.torque = Vector3(x=float(torque[0]), y=float(torque[1]), z=float(torque[2]))
         self.command_publisher.publish(msg)
+
+        # Logowanie (throttle)
+        if now_ns - self._last_debug_log_ns >= 1_000_000_000:
+            self.get_logger().info(f'[{mode}] pos={self.current_state.position}, target={target["pos"]}')
+            self._last_debug_log_ns = now_ns
 
     def _generate_ground_truth_plots(self):
         """Generuje pliki PNG z porównaniem trajektorii i zapisuje je w folderze pakietu."""

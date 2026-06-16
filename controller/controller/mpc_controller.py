@@ -1,69 +1,52 @@
 import numpy as np
 from scipy.optimize import minimize
 
-
 class MPCPositionController:
-    """Simple receding-horizon MPC that outputs desired acceleration.
-
-    Solves a small QP over accelerations to drive position to a target while
-    respecting acceleration bounds. Uses scipy.optimize.SLSQP (no external QP solver).
-    """
-
-    def __init__(self, dt: float = 0.1, horizon: int = 10, a_max: float = 5.0, q_pos: float = 10.0, r_acc: float = 0.1):
+    def __init__(self, dt=0.01, horizon=8, a_max=0.01, q_pos=3e-8, q_vel=3e-3, r_acc=2):
         self.dt = float(dt)
         self.N = int(horizon)
         self.a_max = float(a_max)
         self.q_pos = float(q_pos)
+        self.q_vel = float(q_vel)
         self.r_acc = float(r_acc)
+        self.last_solution = None # Dla warm startu
 
-    def solve(self, pos0: np.ndarray, vel0: np.ndarray, pos_target: np.ndarray, vel_target: np.ndarray = None, acc_ff: np.ndarray = None):
-        """Solve MPC and return first-step acceleration command.
-
-        pos0, vel0, pos_target are 3-element arrays. vel_target and acc_ff are optional.
-        """
+    def solve(self, pos0, vel0, pos_target, vel_target=None, acc_ff=None):
         pos0 = np.asarray(pos0, dtype=float)
         vel0 = np.asarray(vel0, dtype=float)
         pos_target = np.asarray(pos_target, dtype=float)
-        if vel_target is None:
-            vel_target = np.zeros(3)
-        if acc_ff is None:
-            acc_ff = np.zeros(3)
+        vel_target = np.zeros(3) if vel_target is None else np.asarray(vel_target, dtype=float)
+        acc_ff = np.zeros(3) if acc_ff is None else np.asarray(acc_ff, dtype=float)
 
-        N = self.N
-        dt = self.dt
-
-        # decision variable: stacked accelerations [a0x,a0y,a0z, a1x,...]
-        x0 = np.tile(acc_ff, N)
+        # Warm start
+        if self.last_solution is not None:
+            x0 = np.concatenate([self.last_solution[3:], self.last_solution[-3:]])
+        else:
+            x0 = np.tile(acc_ff, self.N)
 
         Q = self.q_pos * np.eye(3)
+        Qv = self.q_vel * np.eye(3)
         R = self.r_acc * np.eye(3)
 
         def rollout(accs_flat):
-            accs = accs_flat.reshape((N, 3))
-            pos = pos0.copy()
-            vel = vel0.copy()
-            cost = 0.0
-            for k in range(N):
+            accs = accs_flat.reshape((self.N, 3))
+            p, v, cost = pos0.copy(), vel0.copy(), 0.0
+            for k in range(self.N):
                 a = accs[k]
-                # dynamics
-                pos = pos + vel * dt + 0.5 * a * dt * dt
-                vel = vel + a * dt
-                # stage cost: pos error to final target + control effort around feedforward
-                e = pos - pos_target
+                p = p + v * self.dt + 0.5 * a * self.dt**2
+                v = v + a * self.dt
+                
+                ep = p - pos_target
+                ev = v - vel_target
                 da = a - acc_ff
-                cost += e @ (Q @ e) + da @ (R @ da)
+                cost += ep @ (Q @ ep) + ev @ (Qv @ ev) + da @ (R @ da)
             return cost
 
-        # bounds for accelerations per axis
-        bounds = [(-self.a_max, self.a_max)] * (3 * N)
+        bounds = [(-self.a_max, self.a_max)] * (3 * self.N)
+        res = minimize(rollout, x0, method='SLSQP', bounds=bounds, options={'maxiter': 500, 'ftol': 1e-4})
 
-        res = minimize(rollout, x0, method='SLSQP', bounds=bounds, options={'maxiter': 200, 'ftol': 1e-3})
-
-        if not res.success:
-            # fallback: simple PD-like acceleration
-            a_fb = -2.0 * (pos0 - pos_target) - 1.0 * (vel0 - vel_target)
-            a_fb = np.clip(a_fb, -self.a_max, self.a_max)
-            return a_fb
-
-        a_seq = res.x.reshape((N, 3))
-        return a_seq[0]
+        if res.success:
+            self.last_solution = res.x
+            return res.x[0:3]
+        else:
+            return -2.0 * (pos0 - pos_target) - 1.0 * (vel0 - vel_target)
