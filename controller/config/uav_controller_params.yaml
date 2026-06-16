@@ -3,7 +3,7 @@ controller_node:
     mass: 0.0282
     gravity: 9.81
     dt: 0.01
-    max_tilt_angle_deg: 45.0
+    max_tilt_angle_deg: 65.0
 
     # Kp: Podkręcamy osie X i Y dla twardszego trzymania śladu w zakrętach.
     # Oś Z zostawiamy na poziomie 2.0 (jest optymalny).

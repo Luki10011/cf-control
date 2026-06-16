@@ -148,9 +148,9 @@ class ControllerNode(Node):
             start_pos,                          # Punkt 0: Start z ziemi/zawisu
             [1.5, 1.5, 1.2],       # Punkt 1: Płynne wzniesienie na 1.2 metra
             [3.0, 2.5, 2.6],           # Punkt 2: Lot 1 metr w przód (oś X)
-            [2.5, 3.5, 1.2],                    # Punkt 3: Lot 1 metr w bok (oś Y)
-            [1.0, 4.0, 1.0],   # Punkt 4: Powrót nad punkt startowy
-            [0.0, 4.5, 0.5],   # Punkt 5: Lądowanie (pozycja niższa niż start)
+            [2.5, 3.5, 2.0],                    # Punkt 3: Lot 1 metr w bok (oś Y)
+            [1.0, 4.0, 1.5],   # Punkt 4: Powrót nad punkt startowy
+            [0.0, 4.5, 1.0],   # Punkt 5: Lądowanie (pozycja niższa niż start)
         ])
 
         # --- CZASY DLA KAŻDEGO SEGMENTU (w sekundach) ---
