@@ -2,7 +2,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 class MPCPositionController:
-    def __init__(self, dt=0.01, horizon=8, a_max=0.01, q_pos=3e-8, q_vel=3e-3, r_acc=2):
+    def __init__(self, dt=0.1, horizon=20, a_max=0.01, q_pos=3e-8, q_vel=3e-3, r_acc=2):
         self.dt = float(dt)
         self.N = int(horizon)
         self.a_max = float(a_max)
